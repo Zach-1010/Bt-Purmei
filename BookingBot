@@ -1,1 +1,133 @@
-main.py (8189027863:AAEUbWle6OgjArKuI815cN150zd4Dc7LXLQ)
+# main.py
+# Telegram Football Sign-Up Bot
+# - 15 slots + waitlist (5) + VIP auto-reservations
+# - Inline buttons: Join / Leave / List
+# - Admin commands: /newgame, /lock, /unlock, /reset
+# - Persistence: Pickle file (no database needed)
+# - Python 3.10+, python-telegram-bot==20.8
+
+from __future__ import annotations
+
+import os
+import html
+import logging
+from datetime import datetime, timezone
+from typing import List, Dict, Any
+
+from dateutil import parser as dtparser
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ChatMember,
+    ChatMemberAdministrator,
+    ChatMemberOwner,
+)
+from telegram.constants import ParseMode
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    PicklePersistence,
+    filters,
+)
+
+# -----------------------------
+# CONFIG
+# -----------------------------
+DEFAULT_CAPACITY = 15
+WAITLIST_CAPACITY = 5  # <= your request
+
+# VIPs: always included when a new game is created
+# IMPORTANT: These are display names shown in Telegram.
+# Make sure they match how the names appear in Telegram (e.g., "Albert Tan" if that’s the display)
+VIP_NAMES = ["Albert", "Ah Soon"]
+
+# If you later want to bind VIPs to real Telegram accounts, you can extend each row with a user_id.
+
+
+# -----------------------------
+# Logging
+# -----------------------------
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger("football-bot")
+
+
+# -----------------------------
+# Utilities
+# -----------------------------
+def is_admin(member: ChatMember) -> bool:
+    return isinstance(member, (ChatMemberAdministrator, ChatMemberOwner))
+
+
+async def user_is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return False
+    try:
+        member = await context.bot.get_chat_member(chat.id, user.id)
+        return is_admin(member)
+    except Exception as e:
+        logger.warning("Admin check failed: %s", e)
+        return False
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def make_keyboard(locked: bool) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="✅ Join", callback_data="join")],
+        [InlineKeyboardButton(text="🚪 Leave", callback_data="leave")],
+        [InlineKeyboardButton(text="📋 List", callback_data="list")],
+    ]
+    if locked:
+        buttons[0][0] = InlineKeyboardButton(text="🔒 Locked", callback_data="noop")
+    return InlineKeyboardMarkup(buttons)
+
+
+def ensure_event(chat_data: Dict[str, Any]) -> Dict[str, Any]:
+    if "event" not in chat_data or not chat_data.get("event"):
+        chat_data["event"] = {
+            "title": None,  # e.g., "Sat 5 Oct, 7pm"
+            "capacity": DEFAULT_CAPACITY,
+            "locked": False,
+            "players": [],   # list of dicts: {user_id, name, joined_at, is_vip}
+            "waitlist": [],  # same structure
+            "created_at": now_iso(),
+        }
+    return chat_data["event"]
+
+
+def find_user(lst: List[Dict[str, Any]], user_id: int) -> int:
+    for i, row in enumerate(lst):
+        if row.get("user_id") == user_id:
+            return i
+    return -1
+
+
+def format_roster(event: Dict[str, Any]) -> str:
+    title = event.get("title") or "Upcoming Game"
+    cap = event.get("capacity", DEFAULT_CAPACITY)
+    players = event.get("players", [])
+    wait = event.get("waitlist", [])
+    wait_cap = WAITLIST_CAPACITY
+
+    lines = [
+        f"<b>⚽ {html.escape(title)}</b>",
+        f"Slots: <b>{len(players)}/{cap}</b>  •  Waitlist: <b>{len(wait)}/{wait_cap}</b>",
+        "",
+        "<b>Confirmed</b>",
+    ]
+
+    if players:
+        for i, p in enumerate(players, start=1):
+            tag = " (VIP)" if p.get("is_vip") else ""
+            lines.append(f"{i:>
