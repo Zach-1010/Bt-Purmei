@@ -334,4 +334,11 @@ async def handle_join(update: Update, context: ContextTypes.DEFAULT_TYPE, source
 
     if len(event["players"]) < capacity:
         event["players"].append(entry)
-        await msg.reply_text(f"Joined! You are #{len(event['
+        await msg.reply_text(f"Joined! You are #{len(event['players'])}.")
+    else:
+        # Enforce waitlist capacity
+        if len(event["waitlist"]) >= WAITLIST_CAPACITY:
+            await msg.reply_text("List and waitlist are full. Sorry!")
+            return
+        event["waitlist"].append(entry)
+        await msg.reply_text(f"List is full. You are WL#{len(event['waitlist'])}.")
